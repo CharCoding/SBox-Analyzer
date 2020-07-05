@@ -190,6 +190,15 @@
       inverted[sbox[i]] = i;
     return inverted;
   }
+  function check_unique(sbox) {
+    const bools = new Uint8Array(256);
+    for(let i = 256; i--;)
+      if(bools[sbox[i]])
+        return sbox[i];
+      else
+        bools[sbox[i]] = 1;
+    return -1;
+  }
   document.addEventListener('DOMContentLoaded', e => {
     for(let i = 0; i < 16; ++i) {
       const tr = document.createElement('tr'),
@@ -211,22 +220,12 @@
       if(v.toString(16) != s || (v & 255) != 255)
         e.target.value = s.replace(/[^0-9a-f]/gi, '').slice(0, 2).toUpperCase() || e.target.placeholder;
     }
-    function check_unique(sbox) {
-      const bools = new Uint8Array(256);
-      for(let i = 256; i--;)
-        if(bools[sbox[i]])
-          return sbox[i];
-        else
-          bools[sbox[i]] = 1;
-      return -1;
-    }
     for(const input of document.querySelectorAll('input[type="text"]')) {
       input.addEventListener('blur', onblur);
     }
     shuffle_bn.addEventListener('click', e => {
-      for(let i = 0; i < 256; ++i) {
+      for(let i = 256; i--;)
         SBOX[i] = i;
-      }
       let index = 256;
       while(index) {
         const rand = Math.floor(Math.random() * index--);
@@ -267,12 +266,25 @@
           parseInt(multiplier1.value, 16),
           parseInt(adder1.value, 16)
         );
+      let n = check_unique(SBOX); // shouldn't happen with randomized parameters
+      if(n >= 0) { // keep this here because user can enter bad parameters
+        alert('Error while generating sbox - check console for info');
+        console.log('Sbox contains duplicate values: ' + n);
+        for(let i = 256; i--;)
+          SBOX[i] = i;
+        return;
+      }
       update();
     });
     const fieldPoly = document.querySelectorAll('option');
     randomize_bn.addEventListener('click', e => {
-      multiplier0.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
-      multiplier1.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
+      let m0 = Math.random() * 255 + 1 | 0, m1 = Math.random() * 255 + 1 | 0;
+      if(!parity(m0)) // multipliers must have an odd number of set bits
+        m0 ^= 1 << (Math.random() * 8 | 0);
+      if(!parity(m1))
+        m1 ^= 1 << (Math.random() * 8 | 0);
+      multiplier0.value = m0.toString(16).toUpperCase();
+      multiplier1.value = m1.toString(16).toUpperCase();
       adder0.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
       adder1.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
       fieldPoly[Math.random() * fieldPoly.length | 0].selected = true;
@@ -288,7 +300,7 @@
           SBOX[i] = sbox[i];
         update();
       } catch(error) {
-        alert('Sbox failed to generate - check console for info.');
+        alert('Error while generating sbox - check console for info');
         console.log(error);
       }
     });
@@ -322,12 +334,10 @@
             linearBias -= parity(i & j ^ sbox[i] & k);
             diffBias += (sbox[i] ^ sbox[i ^ j]) == k;
           }
-          if(Math.abs(linearBias) > Math.abs(maxLinearBias[0])) {
+          if(Math.abs(linearBias) > Math.abs(maxLinearBias[0]))
             maxLinearBias = [linearBias, j, k];
-          }
-          if(diffBias > maxDiffBias[0]) {
+          if(diffBias > maxDiffBias[0])
             maxDiffBias = [diffBias, j, k];
-          }
           lt.fillStyle = color(linearBias);
           dt.fillStyle = color(diffBias * 4);
           lt.fillRect(j, k, 1, 1);
@@ -336,20 +346,20 @@
       }
       let lhs = '', rhs = '';
       for(let i = 0; i < 8; ++i) {
-        if(maxLinearBias[1] >> i & 1) {
+        if(maxLinearBias[1] >> i & 1)
           lhs += `x<sub>${i}</sub> ⊕ `;
-        }
-        if(maxLinearBias[2] >> i & 1) {
+        if(maxLinearBias[2] >> i & 1)
           rhs += ` ⊕ S(x)<sub>${i}</sub>`;
-        }
       }
       summary.innerHTML = `<br>Maximum linear probability bias (${(maxLinearBias[0] > 0 ? '+' : '') + (maxLinearBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; ${(lhs + rhs).replace(/⊕  ⊕/, '=')}<br>Maximum differential probability (${(maxDiffBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; x ⊕ ${maxDiffBias[2]} = S(x ⊕ ${maxDiffBias[1]})<br>${cycleDecomp(sbox)}`;
     }
     function cycleDecomp(sbox) {
       const arr = new Uint8Array(256);
-      let minCycle = { length: 257 }, currentCycle = [0], temp = 0;
+      let minCycle = { length: 257 }, currentCycle = [0], temp = 0, counter = 0;
       arr[0] = 1;
       while(temp >= 0) {
+        if(++counter > 256) // for safety, hopefully not needed
+          return 'Error while analyzing sbox cycle decomposition';
         temp = sbox[temp];
         arr[temp] = 1;
         if(temp == currentCycle[0]) {
@@ -368,7 +378,6 @@
         return `Minimum iterative cycle: (${minCycle.join(' ')})`;
       return `Minimum iterative cycle: (${minCycle[0]} ... ${minCycle[minCycle.length - 1]}), length = ${minCycle.length}`;
     }
-    window.cycleDecomp = cycleDecomp;
     for(let i = 256; --i;) {
       SBOX[i] = i;
       lt.fillStyle = dt.fillStyle = '#00' + i.toString(16).padStart(2, '0') + '00';
