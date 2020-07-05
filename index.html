@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>S-Box Analyzer</title>
+  <style type="text/css">
+  body {
+    position: absolute;
+    left: 0;
+    top: 0;
+    margin: 0;
+    width: 100%;
+    font-size: 18px;
+    font-family: monospace;
+    color: #000;
+    background-color: #ddd;
+    display: flex;
+    flex-direction: column;
+    flex-wrap: wrap;
+    align-items: stretch;
+  }
+  #main {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+  }
+  #results {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  button, input, select {
+    font-size: 18px;
+  }
+  sup, sub {
+    font-size: 12px;
+    font-family: serif;
+  }
+  textarea {
+    font-size: 16px;
+  }
+  table {
+    border-spacing: 0;
+    border-collapse: collapse;
+  }
+  tr {
+    padding: 0;
+  }
+  tbody tr:nth-child(odd) {
+    background-color: #bbb;
+  }
+  td {
+    width: 40px;
+    border: 1px solid #000;
+    text-align: center;
+  }
+  tbody td:first-child, thead td {
+    background-color: #333;
+    color: #eee;
+  }
+  tbody tr:nth-child(odd) td:first-child, thead td:nth-child(even) {
+    background-color: #111;
+  }
+  code {
+    color: #181;
+  }
+  samp {
+    color: #a60;
+  }
+  kbd {
+    color: #80a;
+  }
+  #code {
+    overflow-y: auto;
+  }
+  #displays {
+    position: relative;
+    width: 768px;
+    height: 768px;
+  }
+  #displays > * {
+    position: absolute;
+    width: 768px;
+    height: 768px;
+  }
+  canvas {
+    image-rendering: optimizeSpeed;
+  }
+  #summary {
+    background-color: #ddd;
+  }
+  </style>
+  <script type="text/javascript">'use strict';
+  let SBOX = new Uint8Array(256);
+  function parity(byte) {
+    return 0x6996 >> ((byte ^ byte >> 4) & 15) & 1;
+  }
+  function rotl(byte, shift) {
+    return (byte << shift | byte >> (8 - shift)) & 255;
+  }
+  /*// I don't like how this is done
+  function xform(sbox, mult, add) {
+    const xformed = new Uint8Array(256).fill(add);
+    for(let shift = 8; shift--;)
+      if(mult >> shift & 1)
+        for(let i = 256; i--;)
+          xformed[i] ^= rotl(sbox[i], shift);
+    return xformed;
+  }
+  //*/// alternative
+  function aes_sbox(x) {
+    return affine(gf_inv(x), 0x1F, 0x63);
+  }
+  function aes_inv_sbox(x) {
+    return gf_inv(affine(x, 0x4a, 0x5));
+  }
+  function affine(x, mult, add) {
+    for(let shift = 8; shift--;)
+      if(mult >> shift & 1)
+        add ^= rotl(x, shift);
+    return add;
+  }
+  function gf_mul(x, y, polynomial = 0x11B) {
+    let p = 0;
+    while(x && y) {
+      if(y & 1)
+        p ^= x;
+      if(x & 0x80)
+        x = (x << 1 ^ polynomial);// & 0xFF; shouldn't be necessary
+      else
+        x = x << 1 & 0xFF;
+      y >>= 1;
+    }
+    return p;
+  }
+  /*// doesn't work... or does it?
+  function eu_div(x, y) {
+    const divisor = Math.clz32(y);
+    let deg = divisor - Math.clz32(x), q = 0;
+    while(deg >= 0) {
+      x ^= y << deg;
+      q |= 1 << deg;
+      deg = divisor - Math.clz32(x);
+    }
+    return q;
+  }
+  //*/
+  function gf_pow(x, p, polynomial = 0x11B) { // O(log(x)log(p))??
+    let r = 1;
+    while(p) {
+      if(p & 1)
+        r = gf_mul(r, x, polynomial);
+      x = gf_mul(x, x, polynomial);
+      p >>= 1;
+    }
+    return r;
+  }
+  function xgcd(a, m = 257) {
+    let m0 = m, y = 0, x = 1;
+    while(a > 1) {
+      let q = Math.floor(a / m), t = m;
+      m = a % m;
+      a = t;
+      t = y;
+      y = x - q * y;
+      x = t;
+    }
+    if (x < 0)
+      x += m0;
+    return x;
+  }
+  function gf_inv(x, polynomial = 0x11B) {
+    if(x < 2) return x; // 0 has no inverse; inverse of 256 in GF(257) is 256, which is 0 mod 256.
+    // inverse of 1 is always 1
+    if(polynomial == 257) return xgcd(x); // GF(257)
+    return gf_pow(x, 0xFE, polynomial); // not efficient, but who cares?
+    /*// doesn't work
+    let t = 0, newt = 1, r = polynomial, newr = x;
+    while(newr) {
+      let quotient = eu_div(r, newr);
+      [r, newr] = [newr, r ^ gf_mul(quotient, newr)];
+      [t, newt] = [newt, t ^ gf_mul(quotient, newt)];
+    }
+    return t;
+    //*/
+  }
+  function invert(sbox) {
+    const inverted = new Uint8Array(256);
+    for(let i = 256; i--;)
+      inverted[sbox[i]] = i;
+    return inverted;
+  }
+  document.addEventListener('DOMContentLoaded', e => {
+    for(let i = 0; i < 16; ++i) {
+      const tr = document.createElement('tr'),
+        td = document.createElement('td');
+      td.textContent = i.toString(16).toUpperCase() + '0';
+      tr.appendChild(td);
+      for(let j = 16; j--;)
+        tr.appendChild(document.createElement('td'));
+      box.appendChild(tr);
+    }
+    function update() {
+      for(let i = 256; i--;)
+        box.children[i >> 4].children[(i & 15) + 1].textContent = SBOX[i].toString(16).toUpperCase().padStart(2, '0');
+      visualize(SBOX);
+    }
+    function onblur(e) { // sanitize input
+      const s = e.target.value,
+        v = parseInt(s, 16);
+      if(v.toString(16) != s || (v & 255) != 255)
+        e.target.value = s.replace(/[^0-9a-f]/gi, '').slice(0, 2).toUpperCase() || e.target.placeholder;
+    }
+    function check_unique(sbox) {
+      const bools = new Uint8Array(256);
+      for(let i = 256; i--;)
+        if(bools[sbox[i]])
+          return sbox[i];
+        else
+          bools[sbox[i]] = 1;
+      return -1;
+    }
+    for(const input of document.querySelectorAll('input[type="text"]')) {
+      input.addEventListener('blur', onblur);
+    }
+    shuffle_bn.addEventListener('click', e => {
+      for(let i = 0; i < 256; ++i) {
+        SBOX[i] = i;
+      }
+      let index = 256;
+      while(index) {
+        const rand = Math.floor(Math.random() * index--);
+        [SBOX[index], SBOX[rand]] = [SBOX[rand], SBOX[index]];
+      }
+      update();
+    });
+    invert_bn.addEventListener('click', e => {
+      SBOX = invert(SBOX);
+      update();
+    });
+    aes_bn.addEventListener('click', e => {
+      for(let i = 256; i--;)
+        SBOX[i] = aes_sbox(i);
+      update();
+    });
+    import_bn.addEventListener('click', e => {
+      const str = prompt('Enter the Sbox as comma separated values.'),
+        arr = str.split(',');
+      if(/[a-f]/i.test(str))
+        for(let i = 256; i--;)
+          SBOX[i] = parseInt(arr[i], 16);
+      else
+        for(let i = 256; i--;)
+          SBOX[i] = +arr[i];
+      update();
+    });
+    export_bn.addEventListener('click', e =>
+      prompt('Ctrl + C to copy the Sbox', SBOX.join(','))
+    );
+    generate_bn.addEventListener('click', e => {
+      for(let i = 256; i--;)
+        SBOX[i] = affine(
+          gf_inv(
+            affine(i, parseInt(multiplier0.value, 16), parseInt(adder0.value, 16)),
+            +field.value
+          ),
+          parseInt(multiplier1.value, 16),
+          parseInt(adder1.value, 16)
+        );
+      update();
+    });
+    const fieldPoly = document.querySelectorAll('option');
+    randomize_bn.addEventListener('click', e => {
+      multiplier0.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
+      multiplier1.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
+      adder0.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
+      adder1.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
+      fieldPoly[Math.random() * fieldPoly.length | 0].selected = true;
+    });
+    run_bn.addEventListener('click', e => {
+      try {
+        let sbox = new Uint8Array(256);
+        eval(code.value);
+        const n = check_unique(sbox);
+        if(n >= 0)
+          throw 'Sbox contains duplicate values: ' + n;
+        for(let i = 256; i--;)
+          SBOX[i] = sbox[i];
+        update();
+      } catch(error) {
+        alert('Sbox failed to generate - check console for info.');
+        console.log(error);
+      }
+    });
+    function switchDisplay(e) {
+      for(let i = 3; i--;)
+        displays.children[i].style.zIndex = 1 + (+e.target.value == i);
+    }
+    for(const radio of document.getElementsByName('analysis')) {
+      radio.addEventListener('click', switchDisplay);
+      if(radio.checked)
+        displays.children[+radio.value].style.zIndex = 2;
+    }
+    const lt = lc.getContext('2d', { alpha: false }),
+      dt = dc.getContext('2d', { alpha: false });
+    function color(scale) {
+      if(scale < 0) { // "safe" threshold: |scale| ≤ 16
+        const str = Math.max(255 + scale * 8, 0).toString(16).padStart(2, '0');
+        return '#ff' + str + str;
+      } else if (scale > 0) {
+        const str = Math.max(255 - scale * 8, 0).toString(16).padStart(2, '0');
+        return '#' + str + str + 'ff';
+      }
+      return '#fff';
+    }
+    function visualize(sbox) {
+      let maxLinearBias = [0, 0, 0], maxDiffBias = [0, 0, 0];
+      for(let j = 256; --j;) {
+        for(let k = 256; --k;) {
+          let linearBias = 128, diffBias = 0;
+          for(let i = 256; i--;) {
+            linearBias -= parity(i & j ^ sbox[i] & k);
+            diffBias += (sbox[i] ^ sbox[i ^ j]) == k;
+          }
+          if(Math.abs(linearBias) > Math.abs(maxLinearBias[0])) {
+            maxLinearBias = [linearBias, j, k];
+          }
+          if(diffBias > maxDiffBias[0]) {
+            maxDiffBias = [diffBias, j, k];
+          }
+          lt.fillStyle = color(linearBias);
+          dt.fillStyle = color(diffBias * 4);
+          lt.fillRect(j, k, 1, 1);
+          dt.fillRect(j, k, 1, 1);
+        }
+      }
+      let lhs = '', rhs = '';
+      for(let i = 0; i < 8; ++i) {
+        if(maxLinearBias[1] >> i & 1) {
+          lhs += `x<sub>${i}</sub> ⊕ `;
+        }
+        if(maxLinearBias[2] >> i & 1) {
+          rhs += ` ⊕ S(x)<sub>${i}</sub>`;
+        }
+      }
+      summary.innerHTML = `<br>Maximum linear probability bias (${(maxLinearBias[0] > 0 ? '+' : '') + (maxLinearBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; ${(lhs + rhs).replace(/⊕  ⊕/, '=')}<br>Maximum differential probability (${(maxDiffBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; x ⊕ ${maxDiffBias[2]} = S(x ⊕ ${maxDiffBias[1]})<br>${cycleDecomp(sbox)}`;
+    }
+    function cycleDecomp(sbox) {
+      const arr = new Uint8Array(256);
+      let minCycle = { length: 257 }, currentCycle = [0], temp = 0;
+      arr[0] = 1;
+      while(temp >= 0) {
+        temp = sbox[temp];
+        arr[temp] = 1;
+        if(temp == currentCycle[0]) {
+          if(currentCycle.length < minCycle.length) {
+            minCycle = currentCycle;
+          }
+          temp = arr.indexOf(0);
+          currentCycle = [temp];
+        } else {
+          currentCycle.push(temp);
+        }
+      }
+      if(minCycle.length == 1)
+        return `Minimum iterative cycle: (${minCycle[0]}), Fixed point`;
+      if(minCycle.length < 5)
+        return `Minimum iterative cycle: (${minCycle.join(' ')})`;
+      return `Minimum iterative cycle: (${minCycle[0]} ... ${minCycle[minCycle.length - 1]}), length = ${minCycle.length}`;
+    }
+    window.cycleDecomp = cycleDecomp;
+    for(let i = 256; --i;) {
+      SBOX[i] = i;
+      lt.fillStyle = dt.fillStyle = '#00' + i.toString(16).padStart(2, '0') + '00';
+      lt.fillRect(0, i, 1, 1);
+      lt.fillRect(i, 0, 1, 1);
+      dt.fillRect(0, i, 1, 1);
+      dt.fillRect(i, 0, 1, 1);
+    }
+    update();
+  });
+  </script>
+</head>
+<body>
+  <div id="main">
+    <div id="controls">
+      <form onsubmit="return false;">
+        <fieldset id="general">
+          <legend>General</legend>
+          This is a tool for generating and analyzing 8-bit substitution boxes.<br>
+          <button id="shuffle_bn">Random Shuffle</button>
+          <button id="invert_bn">Invert</button>
+          <button id="aes_bn">Load AES Sbox</button>
+          <button id="import_bn">Import</button>
+          <button id="export_bn">Export</button>
+          <input type="reset" value="Reset">
+        </fieldset>
+        <fieldset id="nyberg">
+          <legend>Nyberg Sbox</legend>
+          <ol>
+            <li>Affine transformation<br>
+              x' = (x &times; <input type="text" id="multiplier0" placeholder="1" value="1" size="1" maxlength="3"><sub>16</sub>
+              mod 101<sub>16</sub>) ⊕ <input type="text" id="adder0" placeholder="0" value="0" size="1" maxlength="3"><sub>16</sub></li>
+            <li>Galois Field inversion<br>
+              Using field <select id="field">
+              <optgroup label="GF(2⁸)/">
+                <option value="283" selected>100011011 (11B₁₆)</option><option value="285">100011101 (11D₁₆)</option>
+                <option value="299">100101011 (12B₁₆)</option><option value="301">100101101 (12D₁₆)</option>
+                <option value="313">100111001 (139₁₆)</option><option value="319">100111111 (13F₁₆)</option>
+                <option value="333">101001101 (14D₁₆)</option><option value="351">101011111 (15F₁₆)</option>
+                <option value="355">101100011 (163₁₆)</option><option value="357">101100101 (165₁₆)</option>
+                <option value="361">101101001 (169₁₆)</option><option value="369">101110001 (171₁₆)</option>
+                <option value="375">101110111 (177₁₆)</option><option value="379">101111011 (17B₁₆)</option>
+                <option value="391">110000111 (187₁₆)</option><option value="395">110001011 (18B₁₆)</option>
+                <option value="397">110001101 (18D₁₆)</option><option value="415">110011111 (19F₁₆)</option>
+                <option value="419">110100011 (1A3₁₆)</option><option value="425">110101001 (1A9₁₆)</option>
+                <option value="433">110110001 (1B1₁₆)</option><option value="445">110111101 (1BD₁₆)</option>
+                <option value="451">111000011 (1C3₁₆)</option><option value="463">111001111 (1CF₁₆)</option>
+                <option value="471">111010111 (1D7₁₆)</option><option value="477">111011101 (1DD₁₆)</option>
+                <option value="487">111100111 (1E7₁₆)</option><option value="499">111110011 (1F3₁₆)</option>
+                <option value="501">111110101 (1F5₁₆)</option><option value="505">111111001 (1F9₁₆)</option>
+              </optgroup>
+              <option value="257">GF(257) (bad)</option>
+            </select>,<br>
+            x'' = x'<sup>-1</sup> &nbsp; &nbsp; &nbsp; if x' ≠ 0<br>
+            &nbsp; &nbsp; &nbsp; 0 &nbsp; &nbsp; &nbsp; &nbsp; if x' = 0</li>
+            <li>Affine transformation<br>
+              x''' = (x'' &times; <input type="text" id="multiplier1" placeholder="1F" value="1F" size="1" maxlength="3"><sub>16</sub>
+              mod 101<sub>16</sub>) ⊕ <input type="text" id="adder1" placeholder="63" value="63" size="1" maxlength="3"><sub>16</sub></li>
+          </ol>
+          <button id="generate_bn">Generate Nyberg Sbox</button>
+          <button id="randomize_bn">Randomize parameters</button>
+        </fieldset>
+        <fieldset id="custom">
+          <legend>Custom Sbox</legend>
+          Available functions:<br>
+          <code>aes_sbox(<samp>input</samp>)</code><br>
+          <code>aes_inv_sbox(<samp>input</samp>)</code><br>
+          <code>rotl(<samp>byte</samp>, <samp>shift</samp>)</code> // rotate left<br>
+          <code>affine(<samp>x</samp>, <samp>multiplier</samp>, <samp>adder</samp>)</code><br>
+          <code>gf_mul(<samp>x</samp>, <samp>y</samp>, <samp>polynomial</samp> = <kbd>0x11B</kbd>)</code><br>
+          <code>gf_inv(<samp>x</samp>, <samp>polynomial</samp> = <kbd>0x11B</kbd>)</code><br>
+          <code>xgcd(<samp>x</samp>, <samp>modulus</samp> = <kbd>257</kbd>)</code><br>
+          <code><kbd>let</kbd> <samp>sbox</samp> = <kbd>new</kbd> Uint8Array(<kbd>256</kbd>)</code> // You should populate this array.<br>
+          <textarea id="code" rows="30" cols="50" spellcheck="off" placeholder="Try not to write an infinite loop.">for(let i = 0; i < 256; ++i) {
+  sbox[i] = i;
+}</textarea><br>
+          <button id="run_bn">Run (at your own risk!)</button>
+        </fieldset>
+      </form>
+    </div>
+    <fieldset id="results">
+      <legend>Output</legend>
+      <table>
+        <thead>
+          <tr>
+            <th>+</th>
+            <td>00</td><td>01</td><td>02</td><td>03</td><td>04</td><td>05</td><td>06</td><td>07</td>
+            <td>08</td><td>09</td><td>0A</td><td>0B</td><td>0C</td><td>0D</td><td>0E</td><td>0F</td>
+          </tr>
+        </thead>
+        <tbody id="box" contenteditable></tbody>
+      </table>
+      <span>
+        Show analysis:
+        <input type="radio" name="analysis" value="0" id="linear_rd" checked><label for="linear_rd">Linear</label>
+        <input type="radio" name="analysis" value="1" id="diff_rd"><label for="diff_rd">Differential</label>
+        <input type="radio" name="analysis" value="2" id="summary_rd"><label for="summary_rd">Summary</label>
+      </span>
+      <div id="displays">
+        <canvas id="lc" width="256" height="256"></canvas>
+        <canvas id="dc" width="256" height="256"></canvas>
+        <div id="summary"></div>
+      </div>
+    </fieldset>
+  </div>
+  <div>
+    This tool is only made for educational purposes and is not meant to be used in serious cryptographic applications. Made by <a href="https://github.com/CharCoding/">@CharCoding</a>.
+    <ol>
+    References:
+      <li>Nyberg K. (1991) <a href="https://link.springer.com/chapter/10.1007%2F3-540-46416-6_32">Perfect nonlinear S-boxes</a>. In: Davies D.W. (eds) Advances in Cryptology — EUROCRYPT ’91. EUROCRYPT 1991. Lecture Notes in Computer Science, vol 547. Springer, Berlin, Heidelberg</li>
+      <li><a href="https://csrc.nist.gov/csrc/media/publications/fips/197/final/documents/fips-197.pdf">"The Advanced Encryption Standard"</a> (PDF). FIPS PUB 197: the official AES standard. Federal Information Processing Standard. 2001-11-26. Retrieved 2010-04-29.</li>
+      <li>Jie Cui; Liusheng Huang; Hong Zhong; Chinchen Chang; Wei Yang (May 2011) <a href="https://www.researchgate.net/publication/267554952_An_improved_AES_S-box_and_its_performance_analysis">"AN IMPROVED AES S-BOX AND ITS PERFORMANCE ANALYSIS"</a> (PDF).</li>
+    </ol>
+  </div>
+</body>
+</html>
