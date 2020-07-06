@@ -2,6 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
+  <link href="data:image/x-icon;base64,AAABAAEAEBACAAEAAQCwAAAAFgAAACgAAAAQAAAAIAAAAAEAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACxFwAAtVcAALEXAAAf9wAA//8AABEVAADVWwAAERUAAHf/AAAX/wAA//8AAB4sAABerQAAEigAAF79AAAe7QAA" rel="icon" type="image/x-icon" />
   <title>S-Box Analyzer</title>
   <style type="text/css">
   body {
@@ -84,7 +85,7 @@
     height: 768px;
   }
   canvas {
-    image-rendering: optimizeSpeed;
+    image-rendering: pixelated;
   }
   #summary {
     background-color: #ddd;
@@ -126,9 +127,10 @@
       if(y & 1)
         p ^= x;
       if(x & 0x80)
-        x = (x << 1 ^ polynomial);// & 0xFF; shouldn't be necessary
+        x = x << 1 ^ polynomial;
       else
-        x = x << 1 & 0xFF;
+        x = x << 1;
+      x &= 0xFF;
       y >>= 1;
     }
     return p;
@@ -173,7 +175,7 @@
     if(x < 2) return x; // 0 has no inverse; inverse of 256 in GF(257) is 256, which is 0 mod 256.
     // inverse of 1 is always 1
     if(polynomial == 257) return xgcd(x); // GF(257)
-    return gf_pow(x, 0xFE, polynomial); // not efficient, but who cares?
+    return gf_pow(x, 254, polynomial); // not efficient, but who cares?
     /*// doesn't work
     let t = 0, newt = 1, r = polynomial, newr = x;
     while(newr) {
@@ -220,7 +222,7 @@
       if(v.toString(16) != s || (v & 255) != 255)
         e.target.value = s.replace(/[^0-9a-f]/gi, '').slice(0, 2).toUpperCase() || e.target.placeholder;
     }
-    for(const input of document.querySelectorAll('input[type="text"]')) {
+    for(const input of nyberg.querySelectorAll('input[type="text"]')) {
       input.addEventListener('blur', onblur);
     }
     shuffle_bn.addEventListener('click', e => {
@@ -266,7 +268,7 @@
           parseInt(multiplier1.value, 16),
           parseInt(adder1.value, 16)
         );
-      let n = check_unique(SBOX); // shouldn't happen with randomized parameters
+      const n = check_unique(SBOX); // shouldn't happen with randomized parameters
       if(n >= 0) { // keep this here because user can enter bad parameters
         alert('Error while generating sbox - check console for info');
         console.log('Sbox contains duplicate values: ' + n);
@@ -276,7 +278,7 @@
       }
       update();
     });
-    const fieldPoly = document.querySelectorAll('option');
+    const fieldPoly = field.querySelectorAll('optgroup>option');
     randomize_bn.addEventListener('click', e => {
       let m0 = Math.random() * 255 + 1 | 0, m1 = Math.random() * 255 + 1 | 0;
       if(!parity(m0)) // multipliers must have an odd number of set bits
@@ -291,13 +293,12 @@
     });
     run_bn.addEventListener('click', e => {
       try {
-        let sbox = new Uint8Array(256);
+        const sbox = new Uint8Array(256);
         eval(code.value);
         const n = check_unique(sbox);
         if(n >= 0)
           throw 'Sbox contains duplicate values: ' + n;
-        for(let i = 256; i--;)
-          SBOX[i] = sbox[i];
+        SBOX = sbox;
         update();
       } catch(error) {
         alert('Error while generating sbox - check console for info');
@@ -380,7 +381,7 @@
     }
     for(let i = 256; --i;) {
       SBOX[i] = i;
-      lt.fillStyle = dt.fillStyle = '#00' + i.toString(16).padStart(2, '0') + '00';
+      lt.fillStyle = dt.fillStyle = `#00${i.toString(16).padStart(2, '0')}00`;
       lt.fillRect(0, i, 1, 1);
       lt.fillRect(i, 0, 1, 1);
       dt.fillRect(0, i, 1, 1);
@@ -488,7 +489,7 @@
     <ol>
     References:
       <li>Nyberg K. (1991) <a href="https://link.springer.com/chapter/10.1007%2F3-540-46416-6_32">Perfect nonlinear S-boxes</a>. In: Davies D.W. (eds) Advances in Cryptology — EUROCRYPT ’91. EUROCRYPT 1991. Lecture Notes in Computer Science, vol 547. Springer, Berlin, Heidelberg</li>
-      <li><a href="https://csrc.nist.gov/csrc/media/publications/fips/197/final/documents/fips-197.pdf">"The Advanced Encryption Standard"</a> (PDF). FIPS PUB 197: the official AES standard. Federal Information Processing Standard. 2001-11-26. Retrieved 2010-04-29.</li>
+      <li><a href="https://csrc.nist.gov/csrc/media/publications/fips/197/final/documents/fips-197.pdf">"The Advanced Encryption Standard"</a> (PDF). FIPS PUB 197: the official AES standard. Federal Information Processing Standard. 2001-11-26.</li>
       <li>Jie Cui; Liusheng Huang; Hong Zhong; Chinchen Chang; Wei Yang (May 2011) <a href="https://www.researchgate.net/publication/267554952_An_improved_AES_S-box_and_its_performance_analysis">"AN IMPROVED AES S-BOX AND ITS PERFORMANCE ANALYSIS"</a> (PDF).</li>
     </ol>
   </div>
