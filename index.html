@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <link href="data:image/x-icon;base64,AAABAAEAEBACAAEAAQCwAAAAFgAAACgAAAAQAAAAIAAAAAEAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACxFwAAtVcAALEXAAAf9wAA//8AABEVAADVWwAAERUAAHf/AAAX/wAA//8AAB4sAABerQAAEigAAF79AAAe7QAA" rel="icon" type="image/x-icon" />
   <title>S-Box Analyzer</title>
-  <style type="text/css">
+  <style>
   body {
     position: absolute;
     left: 0;
@@ -89,7 +89,6 @@
     image-rendering:-moz-crisp-edges;
     image-rendering:-o-crisp-edges;
     image-rendering:-webkit-optimize-contrast;
-    image-rendering:optimize-contrast;
     image-rendering:crisp-edges;
     image-rendering:pixelated;
     -ms-interpolation-mode:nearest-neighbor;
@@ -98,7 +97,7 @@
     background-color: #ddd;
   }
   </style>
-  <script type="text/javascript">'use strict';
+  <script>'use strict';
   let SBOX = new Uint8Array(256);
   function parity(byte) {
     return 0x6996 >> ((byte ^ byte >> 4) & 15) & 1;
@@ -260,44 +259,50 @@
       else
         for(let i = 256; i--;)
           SBOX[i] = +arr[i];
+      const n = check_unique(SBOX);
+      if(n >= 0) {
+        alert('Sbox contains duplicate values: ' + n);
+        return;
+      }
       update();
     });
     export_bn.addEventListener('click', e =>
       prompt('Ctrl + C to copy the Sbox', SBOX.join(','))
     );
     generate_bn.addEventListener('click', e => {
+      const m0 = parseInt(multiplier0.value, 16), m1 = parseInt(multiplier1.value, 16);
+      if(!parity(m0)) {
+        alert(`First affine transformation multiplier (${multiplier0.value}) cannot be divisible by x + 1.`);
+        return;
+      }
+      if(!parity(m1)) {
+        alert(`Second affine transformation multiplier (${multiplier1.value}) cannot be divisible by x + 1.`);
+        return;
+      }
       for(let i = 256; i--;)
         SBOX[i] = affine(
           gf_inv(
-            affine(i, parseInt(multiplier0.value, 16), parseInt(adder0.value, 16)),
+            affine(i, m0, parseInt(adder0.value, 16)),
             +field.value
           ),
-          parseInt(multiplier1.value, 16),
+          m1,
           parseInt(adder1.value, 16)
         );
-      const n = check_unique(SBOX); // shouldn't happen with randomized parameters
-      if(n >= 0) { // keep this here because user can enter bad parameters
-        alert('Error while generating sbox - check console for info');
-        console.log('Sbox contains duplicate values: ' + n);
-        for(let i = 256; i--;)
-          SBOX[i] = i;
-        return;
-      }
       update();
     });
-    const fieldPoly = field.querySelectorAll('optgroup>option');
+    const fieldPoly = field.children[0].children;
     randomize_bn.addEventListener('click', e => {
-      let m0 = Math.random() * 255 + 1 | 0, m1 = Math.random() * 255 + 1 | 0;
-      if(!parity(m0)) // multipliers must have an odd number of set bits
-        m0 ^= 1 << (Math.random() * 8 | 0);
-      if(!parity(m1))
-        m1 ^= 1 << (Math.random() * 8 | 0);
+      let m0 = Math.random() * 128 | 0, m1 = Math.random() * 128 | 0;
+      m0 |= 4928640 >> ((m0 ^ m0 >> 4) & 15) & 128; // multipliers must have an
+      m1 |= 4928640 >> ((m1 ^ m1 >> 4) & 15) & 128; // odd number of set bits
       multiplier0.value = m0.toString(16).toUpperCase();
       multiplier1.value = m1.toString(16).toUpperCase();
       adder0.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
       adder1.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
       fieldPoly[Math.random() * fieldPoly.length | 0].selected = true;
     });
+    const errorMsgRegExp = /^\/\* Error .+\*\/\s/;
+    let errors = 0;
     run_bn.addEventListener('click', e => {
       try {
         const sbox = new Uint8Array(256);
@@ -306,10 +311,11 @@
         if(n >= 0)
           throw 'Sbox contains duplicate values: ' + n;
         SBOX = sbox;
+        code.value = code.value.replace(errorMsgRegExp, '');
         update();
+        errors = 0;
       } catch(error) {
-        alert('Error while generating sbox - check console for info');
-        console.log(error);
+        code.value = `/* Error #${++errors}: ${error} */\n${code.value.replace(errorMsgRegExp, '')}`;
       }
     });
     function switchDisplay(e) {
@@ -324,14 +330,12 @@
     const lt = lc.getContext('2d', { alpha: false }),
       dt = dc.getContext('2d', { alpha: false });
     function color(scale) {
-      if(scale < 0) { // "safe" threshold: |scale| ≤ 16
-        const str = Math.max(255 + scale * 8, 0).toString(16).padStart(2, '0');
-        return '#ff' + str + str;
-      } else if (scale > 0) {
-        const str = Math.max(255 - scale * 8, 0).toString(16).padStart(2, '0');
-        return '#' + str + str + 'ff';
-      }
-      return '#fff';
+      if(!scale)
+        return '#fff'; // "safe" threshold: |scale| ≤ 16
+      const str = Math.max(257 - (scale * scale >> 1), 0).toString(16).padStart(2, '0').repeat(2);
+      if(scale < 0)
+        return '#ff' + str;
+      return `#${str}ff`;
     }
     function visualize(sbox) {
       let maxLinearBias = [0, 0, 0], maxDiffBias = [0, 0, 0];
@@ -347,7 +351,7 @@
           if(diffBias > maxDiffBias[0])
             maxDiffBias = [diffBias, j, k];
           lt.fillStyle = color(linearBias);
-          dt.fillStyle = color(diffBias * 4);
+          dt.fillStyle = color(diffBias * 3);
           lt.fillRect(j, k, 1, 1);
           dt.fillRect(j, k, 1, 1);
         }
@@ -459,7 +463,7 @@
           <code>gf_inv(<samp>x</samp>, <samp>polynomial</samp> = <kbd>0x11B</kbd>)</code><br>
           <code>xgcd(<samp>x</samp>, <samp>modulus</samp> = <kbd>257</kbd>)</code><br>
           <code><kbd>let</kbd> <samp>sbox</samp> = <kbd>new</kbd> Uint8Array(<kbd>256</kbd>)</code> // You should populate this array.<br>
-          <textarea id="code" rows="30" cols="50" spellcheck="off" placeholder="Try not to write an infinite loop.">for(let i = 0; i < 256; ++i) {
+          <textarea id="code" rows="30" cols="60" spellcheck="false" placeholder="Try not to write an infinite loop.">for(let i = 0; i < 256; ++i) {
   sbox[i] = i;
 }</textarea><br>
           <button id="run_bn">Run (at your own risk!)</button>
@@ -492,9 +496,9 @@
     </fieldset>
   </div>
   <div>
-    This tool is only made for educational purposes and is not meant to be used in serious cryptographic applications. Made by <a href="https://github.com/CharCoding/">@CharCoding</a>.
-    <ol>
+    This tool is only made for educational purposes and is not meant to be used in serious cryptographic applications. Made by <a href="https://github.com/CharCoding/">@CharCoding</a>.<br>
     References:
+    <ol>
       <li>Nyberg K. (1991) <a href="https://link.springer.com/chapter/10.1007%2F3-540-46416-6_32">Perfect nonlinear S-boxes</a>. In: Davies D.W. (eds) Advances in Cryptology — EUROCRYPT ’91. EUROCRYPT 1991. Lecture Notes in Computer Science, vol 547. Springer, Berlin, Heidelberg</li>
       <li><a href="https://csrc.nist.gov/csrc/media/publications/fips/197/final/documents/fips-197.pdf">"The Advanced Encryption Standard"</a> (PDF). FIPS PUB 197: the official AES standard. Federal Information Processing Standard. 2001-11-26.</li>
       <li>Jie Cui; Liusheng Huang; Hong Zhong; Chinchen Chang; Wei Yang (May 2011) <a href="https://www.researchgate.net/publication/267554952_An_improved_AES_S-box_and_its_performance_analysis">"AN IMPROVED AES S-BOX AND ITS PERFORMANCE ANALYSIS"</a> (PDF).</li>
