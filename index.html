@@ -363,7 +363,7 @@
         if(maxLinearBias[2] >> i & 1)
           rhs += ` ⊕ S(x)<sub>${i}</sub>`;
       }
-      summary.innerHTML = `<br>Maximum linear probability bias (${(maxLinearBias[0] > 0 ? '+' : '') + (maxLinearBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; ${(lhs + rhs).replace(/⊕  ⊕/, '=')}<br>Maximum differential probability (${(maxDiffBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; x ⊕ ${maxDiffBias[2]} = S(x ⊕ ${maxDiffBias[1]})<br>${cycleDecomp(sbox)}`;
+      summary.innerHTML = `<br>Maximum linear probability bias (${(maxLinearBias[0] > 0 ? '+' : '') + (maxLinearBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; ${(lhs + rhs).replace(/⊕  ⊕/, '=')}<br>Maximum differential probability (${(maxDiffBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; S(x) ⊕ ${maxDiffBias[2]} = S(x ⊕ ${maxDiffBias[1]})<br>${cycleDecomp(sbox)}`;
     }
     function cycleDecomp(sbox) {
       const arr = new Uint8Array(256);
