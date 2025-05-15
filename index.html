@@ -20,10 +20,13 @@
     flex-wrap: wrap;
     align-items: stretch;
   }
-  #main {
+  main {
     display: flex;
     flex-direction: row;
     justify-content: center;
+  }
+  #controls {
+    min-width: 680px;
   }
   #results {
     display: flex;
@@ -34,11 +37,43 @@
     font-size: 18px;
   }
   sup, sub {
-    font-size: 12px;
-    font-family: serif;
   }
   textarea {
     font-size: 16px;
+  }
+  #power_display {
+    width: 21px;
+    display: inline-block;
+  }
+  #polynomial_display {
+    word-break: keep-all;
+    text-wrap: nowrap;
+  }
+  #nyberg textarea {
+    resize: none;
+    overflow-x: hidden;
+    overflow-y: hidden;
+  }
+  #matrix0, #matrix1 {
+    width: 150px;
+  }
+  #vector0, #vector1 {
+    width: 15px;
+  }
+  .toggle {
+    display: none;
+  }
+  #affine0poly_rd:checked ~ #affine0poly,
+  #affine1poly_rd:checked ~ #affine1poly {
+    display: block;
+  }
+  #affine0mat_rd:checked ~ #affine0mat,
+  #affine1mat_rd:checked ~ #affine1mat {
+    display: flex;
+  }
+  #affine0mat, #affine1mat {
+    align-items: center;
+    gap: 10px;
   }
   table {
     border-spacing: 0;
@@ -56,6 +91,7 @@
     text-align: center;
   }
   tbody td:first-child, thead td {
+    user-select: none;
     background-color: #333;
     color: #eee;
   }
@@ -84,6 +120,9 @@
     width: 768px;
     height: 768px;
   }
+  #bc {
+    width: 768px;
+  }
   canvas {
     image-rendering:optimizeSpeed;
     image-rendering:-moz-crisp-edges;
@@ -99,50 +138,46 @@
   </style>
   <script>'use strict';
   let SBOX = new Uint8Array(256);
-  function parity(byte) {
-    return 0x6996 >> ((byte ^ byte >> 4) & 15) & 1;
-  }
-  function rotl(byte, shift) {
-    return (byte << shift | byte >> (8 - shift)) & 255;
-  }
-  /*// I don't like how this is done
-  function xform(sbox, mult, add) {
-    const xformed = new Uint8Array(256).fill(add);
-    for(let shift = 8; shift--;)
-      if(mult >> shift & 1)
-        for(let i = 256; i--;)
-          xformed[i] ^= rotl(sbox[i], shift);
-    return xformed;
-  }
-  //*/// alternative
-  function aes_sbox(x) {
-    return affine(gf_inv(x), 0x1F, 0x63);
-  }
-  function aes_inv_sbox(x) {
-    return gf_inv(affine(x, 0x4a, 0x5));
-  }
-  function affine(x, mult, add) {
+  const parity = byte => 0x6996 >> ((byte ^ byte >> 4) & 15) & 1,
+    rotl = (byte, shift) => (byte << shift | byte >> (8 - shift)) & 255,
+    popcount = byte => {
+      byte -= (byte >> 1 & 0x55);
+      byte = (byte & 0x33) + (byte >> 2 & 0x33);
+      return (byte & 0xf) + (byte >> 4);
+    },
+    reverse = byte => ((byte * 0x802 & 0x22110) | (byte * 0x8020 & 0x88440)) * 0x10101 >> 16 & 255,
+    affine = (x, mult, mod, add) => gf_mul(x, mult, mod) ^ add,
+    aes_sbox = x => affine_rot(gf_xgcd(x)[0], 0x1F, 0x63),
+    aes_inv_sbox = x => gf_xgcd(affine_rot(x, 0x4a, 0x5))[0],
+    exp_table = new Uint8Array(256),
+    log_table = new Uint8Array(256), // log[0] stores the polynomial of the current cached exp/log table
+    irreducible_polys = Uint16Array.of(
+      0x11b, 0x11d, 0x12b, 0x12d, 0x139, 0x13f, 0x14d, 0x15f, 0x163, 0x165,
+      0x169, 0x171, 0x177, 0x17b, 0x187, 0x18b, 0x18d, 0x19f, 0x1a3, 0x1a9,
+      0x1b1, 0x1bd, 0x1c3, 0x1cf, 0x1d7, 0x1dd, 0x1e7, 0x1f3, 0x1f5, 0x1f9
+    ), generators = Uint8Array.of(3, 2, 2, 2, 3, 3, 2, 2, 2, 2, 2, 2, 3, 9, 2, 6, 2, 3, 3, 2, 6, 7, 2, 2, 7, 6, 2, 6, 2, 3);
+
+  function affine_rot(x, mult, add) { // for mod === 0x101 (used in AES)
     for(let shift = 8; shift--;)
       if(mult >> shift & 1)
         add ^= rotl(x, shift);
     return add;
   }
-  function gf_mul(x, y, polynomial = 0x11B) {
+  function gf_mul(x, y, polynomial = 0) {
+    const bit = 0x40000000 >> Math.clz32(polynomial);
     let p = 0;
     while(x && y) {
       if(y & 1)
         p ^= x;
-      if(x & 0x80)
+      if(x & bit)
         x = x << 1 ^ polynomial;
       else
         x = x << 1;
-      x &= 0xFF;
-      y >>= 1;
+      y >>>= 1;
     }
     return p;
   }
-  /*// doesn't work... or does it?
-  function eu_div(x, y) {
+  function gf_div(x, y) { // polynomial Euclidean division
     const divisor = Math.clz32(y);
     let deg = divisor - Math.clz32(x), q = 0;
     while(deg >= 0) {
@@ -150,9 +185,16 @@
       q |= 1 << deg;
       deg = divisor - Math.clz32(x);
     }
-    return q;
+    return [q, x];
   }
-  //*/
+  function gf_xgcd(a, m = 0x11B) { // extended Euclidean algorithm
+    let t = 0, newt = 1, r = m, newr = a, quotient;
+    while(newr) {
+      [quotient, newr] = gf_div(r, r = newr); // so cursed, don't look too closely
+      [t, newt] = [newt, t ^ gf_mul(quotient, newt)];
+    }
+    return [t, r]; // t = a^-1 mod m, r = gcd(a, m)
+  }
   function gf_pow(x, p, polynomial = 0x11B) { // O(log(x)log(p))??
     let r = 1;
     while(p) {
@@ -162,6 +204,13 @@
       p >>= 1;
     }
     return r;
+  }
+  function gf_pow_cached(x, p) {
+    if(x < 2) return x;
+    let prod = log_table[x] * p;
+    prod = (prod >> 8) + (prod & 255);
+    if(prod > 254) prod -= 255;
+    return exp_table[prod];
   }
   function xgcd(a, m = 257) {
     let m0 = m, y = 0, x = 1;
@@ -177,20 +226,111 @@
       x += m0;
     return x;
   }
-  function gf_inv(x, polynomial = 0x11B) {
+  function gf_inv(x, polynomial = 0x11B) { // only works for fields! the inverse may not exist in non-fields
     if(x < 2) return x; // 0 has no inverse; inverse of 256 in GF(257) is 256, which is 0 mod 256.
     // inverse of 1 is always 1
-    if(polynomial == 257) return xgcd(x); // GF(257)
-    return gf_pow(x, 254, polynomial); // not efficient, but who cares?
-    /*// doesn't work
-    let t = 0, newt = 1, r = polynomial, newr = x;
-    while(newr) {
-      let quotient = eu_div(r, newr);
-      [r, newr] = [newr, r ^ gf_mul(quotient, newr)];
-      [t, newt] = [newt, t ^ gf_mul(quotient, newt)];
+    if(polynomial === 257) return xgcd(x); // GF(257)
+    return gf_xgcd(x, polynomial)[0];
+  }
+  function parse_vec(str) {
+    return reverse(parseInt(str.replace(/\s/g, ''), 2));
+  }
+  function parse_mat(str) {
+    return str.split('\n').map(parse_vec);
+  }
+  function vec_mul_add(a, b, c = 0) {
+    for(let i = 0; i < 8; ++i)
+      c ^= parity(a[i] & b) << i;
+    return c;
+  }
+  function mat_mul(a, b) {
+    const al = a[0] | a[1] << 8 | a[2] << 16 | a[3] << 24,
+          ah = a[4] | a[5] << 8 | a[6] << 16 | a[7] << 24;
+    let cl = Math.imul(0x1010101 & al, b[0]), ch = Math.imul(0x1010101 & ah, b[0]), i = 7;
+    do {
+      cl ^= Math.imul(0x1010101 & al >> i, b[i]);
+      ch ^= Math.imul(0x1010101 & ah >> i, b[i]);
+    } while (--i);
+    return Uint8Array.of(cl, cl >> 8, cl >> 16, cl >> 24, ch, ch >> 8, ch >> 16, ch >> 24);
+  }
+  function mat_inv(a) {
+    const a_copy = a.slice(), inv = new Uint8Array(8);
+    for(let i = 0; i < 8; ++i)
+      inv[i] = 1 << i;
+    for(let i = 0; i < 8; ++i) {
+      if(!(a_copy[i] & 1 << i))
+        for(let j = i + 1; j < 8; ++j)
+          if(a_copy[j] & 1 << i) {
+            a_copy[i] ^= a_copy[j];
+            inv[i] ^= inv[j];
+            break;
+          }
+      for(let j = 8; j--;)
+        if(i !== j && a_copy[j] & 1 << i) {
+          a_copy[j] ^= a_copy[i];
+          inv[j] ^= inv[i];
+        }
     }
-    return t;
-    //*/
+    if(a_copy.includes(0))
+      throw `Matrix \n${fmt_mat(a)}\n is not invertible`;
+    return inv;
+  }
+  function det(a) {
+    const rows = [...a];
+    do {
+      const pivot = rows.pop();
+      if(pivot) {
+        const lsb = pivot & -pivot;
+        for(let i = rows.length; i--;)
+          if(lsb & rows[i])
+            rows[i] ^= pivot;
+      } else
+        return false;
+    } while(rows.length);
+    return true;
+  }
+  /* https://www.researchgate.net/publication/2729950_Efficient_Generation_of_Random_Nonsingular_Matrices
+  This paper is so bad - the algorithm is formatted badly and misses a line where it assigns random values to A_ir
+  Dealing with submatrices is also difficult - O(n^2) if implemented naively.
+  In JavaScript we don't have constant time pdep so it ends up being O(n^2) anyway, almost as slow as rejection sampling.
+  Rejection sampling has probability 0.2899 of choosing an 8x8 invertible binary matrix.
+  Redesigning the algorithm: */
+  function pdep(a, b) {
+    let r = 0;
+    do {
+      r |= -(a & 1) & (b & -b);
+      a >>= 1;
+    } while(b &= b - 1);
+    return r;
+  }
+  function nonsing() {
+    let al = 0, ah = 0, da = 0, mask = 255, i = 0;
+    const t = new Uint8Array(8);
+    for(; i < 4; ++i) {
+      const v = pdep(Math.random() * (255 >> i) + 1, mask),
+        bit = v & -v;
+      al |= (da | bit) << i * 8;
+      t[31 - Math.clz32(bit)] = v;
+      mask ^= bit;
+      da = Math.random() * 256 & ~mask;
+    }
+    for(i = 0; i < 3; ++i) {
+      const v = pdep(Math.random() * (15 >> i) + 1, mask),
+        bit = v & -v;
+      ah |= (da | bit) << i * 8;
+      t[31 - Math.clz32(bit)] = v;
+      mask ^= bit;
+      da = Math.random() * 256 & ~mask;
+    }
+    ah |= (da | mask) << 24;
+    t[31 - Math.clz32(mask)] = mask;
+    i = 7;
+    let cl = Math.imul(0x1010101 & al, t[0]), ch = Math.imul(0x1010101 & ah, t[0]);
+    do {
+      cl ^= Math.imul(0x1010101 & al >> i, t[i]);
+      ch ^= Math.imul(0x1010101 & ah >> i, t[i]);
+    } while (--i);
+    return Uint8Array.of(cl, cl >> 8, cl >> 16, cl >> 24, ch, ch >> 8, ch >> 16, ch >> 24);
   }
   function invert(sbox) {
     const inverted = new Uint8Array(256);
@@ -200,14 +340,46 @@
   }
   function check_unique(sbox) {
     const bools = new Uint8Array(256);
-    for(let i = 256; i--;)
+    for(let i = 256; i--;) {
       if(bools[sbox[i]])
         return sbox[i];
-      else
-        bools[sbox[i]] = 1;
+      bools[sbox[i]] = 1;
+    }
     return -1;
   }
+  function fmt_bin(v) {
+    return v.toString(2).padStart(8, '0');
+  }
+  function fmt_hex(v) {
+    return v.toString(16).toUpperCase().padStart(2, '0');
+  }
+  function fmt_poly(v) {
+    if(!v) return '0';
+    let str = '';
+    do {
+      const exp = 31 - Math.clz32(v);
+      if(str !== '')
+        str += ' + ';
+      if(exp === 0)
+        str += '1';
+      else if(exp === 1)
+        str += 'x';
+      else
+        str += 'x<sup>' + exp + '</sup>';
+      v ^= 1 << exp;
+    } while(v);
+    return str;
+  }
+  function fmt_vec(a) {
+    return fmt_bin(reverse(a)).split('').join(' ');
+  }
+  function fmt_mat(a) {
+    return [...a].map(fmt_vec).join('\n');
+  }
   document.addEventListener('DOMContentLoaded', e => {
+    const fieldPoly = field.children, exponents = power.children, errorMsgRegExp = /^\/\* Error .+\*\/\s/,
+      lt = lc.getContext('2d', { alpha: false }), dt = dc.getContext('2d', { alpha: false }), bt = bc.getContext('2d', { alpha: false });
+    let errors = 0;
     for(let i = 0; i < 16; ++i) {
       const tr = document.createElement('tr'),
         td = document.createElement('td');
@@ -217,38 +389,127 @@
         tr.appendChild(document.createElement('td'));
       box.appendChild(tr);
     }
+    function syncFormula() {
+      power_display.textContent = (+power.value === 254) ? '-1 ' : power.value;
+      polynomial_display.innerHTML = fmt_poly(field.value);
+    }
     function update() {
       for(let i = 256; i--;)
-        box.children[i >> 4].children[(i & 15) + 1].textContent = SBOX[i].toString(16).toUpperCase().padStart(2, '0');
+        box.children[i >> 4].children[(i & 15) + 1].textContent = fmt_hex(SBOX[i]);
       visualize(SBOX);
     }
-    function onblur(e) { // sanitize input
+    function sanitize_hex(e) {
       const s = e.target.value,
         v = parseInt(s, 16);
-      if(v.toString(16) != s || (v & 255) != 255)
-        e.target.value = s.replace(/[^0-9a-f]/gi, '').slice(0, 2).toUpperCase() || e.target.placeholder;
+      if(v.toString(16) !== s.toLowerCase() || (v & 255) != 255)
+        e.target.value = (s.replace(/[^\da-f]/gi, '') || e.target.placeholder).slice(0, 2).toUpperCase().padStart(2, '0') 
     }
-    for(const input of nyberg.querySelectorAll('input[type="text"]')) {
-      input.addEventListener('blur', onblur);
+    function sanitize_bin(e) {
+      if(!e.isComposing && e.data && /[^01\s]/.test(e.data)) {
+        e.preventDefault();
+        return false;
+      }
     }
     shuffle_bn.addEventListener('click', e => {
-      for(let i = 256; i--;)
-        SBOX[i] = i;
-      let index = 256;
-      while(index) {
-        const rand = Math.floor(Math.random() * index--);
-        [SBOX[index], SBOX[rand]] = [SBOX[rand], SBOX[index]];
+      SBOX[0] = 0;
+      for(let i = 1; i < 256; ++i) {
+        const j = Math.floor(Math.random() * (i + 1));
+        SBOX[i] = SBOX[j];
+        SBOX[j] = i;
       }
       update();
+      generate_bn.disabled = false;
     });
+    function invertStep3() {
+      if(affine1poly_rd.checked) {
+        const m = parseInt(modulus1.value, 16) + 256, [i, r] = gf_xgcd(parseInt(multiplier1.value, 16), m);
+        if(r !== 1)
+          throw `Affine transformation multiplier 0x${multiplier1.value} and modulus 0x1${modulus1.value} are not coprime.`;
+        multiplier0.value = fmt_hex(i);
+        modulus0.value = modulus1.value;
+        adder0.value = fmt_hex(gf_mul(parseInt(adder1.value, 16), i, m));
+        affine0poly_rd.checked = true;
+      } else {
+        const i = mat_inv(parse_mat(matrix1.value));
+        matrix0.value = fmt_mat(i);
+        vector0.value = fmt_vec(vec_mul_add(i, parse_vec(vector1.value)));
+        affine0mat_rd.checked = true;
+      }
+    }
     invert_bn.addEventListener('click', e => {
-      SBOX = invert(SBOX);
-      update();
+      power.value = xgcd(+power.value, 255);
+      try {
+        if(affine0poly_rd.checked) {
+          const tempParams = [parseInt(multiplier0.value, 16), parseInt(modulus0.value, 16) + 256, parseInt(adder0.value, 16)];
+          invertStep3();
+          const [i, r] = gf_xgcd(tempParams[0], tempParams[1]);
+          if(r !== 1)
+            throw `Affine transformation multiplier 0x${fmt_hex(tempParams[0])} and modulus 0x${fmt_hex(tempParams[1])} are not coprime.`;
+          multiplier1.value = fmt_hex(i);
+          modulus1.value = fmt_hex(tempParams[1] & 255);
+          adder1.value = fmt_hex(gf_mul(tempParams[2], i, tempParams[1]));
+          affine1poly_rd.checked = true;
+        } else {
+          const tempParams = [matrix0.value, vector0.value];
+          invertStep3();
+          const i = mat_inv(parse_mat(tempParams[0]));
+          matrix1.value = fmt_mat(i);
+          vector1.value = fmt_vec(vec_mul_add(i, parse_vec(tempParams[1])));
+          affine1mat_rd.checked = true;
+        }
+      } catch(error) {
+        code.value = `/* Error #${++errors}: ${error} */\n${code.value.replace(errorMsgRegExp, '')}`;
+      }
+      syncFormula();
+      generate_bn.disabled = false;
     });
     aes_bn.addEventListener('click', e => {
+      power.value = 254;
+      field.value = 0x11B;
+      syncFormula();
+      if(affine0poly_rd.checked) {
+        multiplier0.value = '01';
+        modulus0.value = adder0.value = '00';
+      } else {
+        matrix0.value = matrix0.placeholder;
+        vector0.value = '0 0 0 0 0 0 0 0';
+      }
+      if(affine1poly_rd.checked) {
+        multiplier1.value = '1F';
+        modulus1.value = '01';
+        adder1.value = '63';
+      } else {
+        matrix1.value = matrix1.placeholder;
+        vector1.value = '1 1 0 0 0 1 1 0';
+      }
       for(let i = 256; i--;)
         SBOX[i] = aes_sbox(i);
       update();
+      generate_bn.disabled = true;
+    });
+    inv_aes_bn.addEventListener('click', e => {
+      power.value = 254;
+      field.value = 0x11B;
+      syncFormula();
+      if(affine0poly_rd.checked) {
+        multiplier0.value = '4A';
+        modulus0.value = '01';
+        adder0.value = '05';
+      } else {
+        matrix0.value = fmt_mat(Uint8Array.of(164, 73, 146, 37, 74, 148, 41, 82));
+        vector0.value = '1 0 1 0 0 0 0 0';
+      }
+      if(affine1poly_rd.checked) {
+        multiplier1.value = '01';
+        modulus1.value = adder1.value = '00';
+      } else {
+        matrix1.value = matrix0.placeholder;
+        vector1.value = '0 0 0 0 0 0 0 0';
+      }
+      for(let i = 256; i--;)
+        SBOX[i] = aes_inv_sbox(i);
+      update();
+      generate_bn.disabled = true;
     });
     import_bn.addEventListener('click', e => {
       const str = prompt('Enter the Sbox as comma separated values.'),
@@ -265,52 +526,87 @@
         return;
       }
       update();
+      generate_bn.disabled = false;
     });
     export_bn.addEventListener('click', e =>
       prompt('Ctrl + C to copy the Sbox', SBOX.join(','))
     );
+    reset_bn.addEventListener('click', enableGenerate);
+    function affineFnFactory(which) {
+      if(document.getElementById(`affine${which}poly_rd`).checked) {
+        const m = parseInt(document.getElementById('multiplier' + which).value, 16),
+          f = 256 + parseInt(document.getElementById('modulus' + which).value, 16),
+          a = parseInt(document.getElementById('adder' + which).value, 16),
+          [, r] = gf_xgcd(m, f);
+          if(r !== 1)
+            throw `Affine transformation multiplier 0x${fmt_hex(m)} and modulus 0x${fmt_hex(f)} are not coprime.`;
+        return x => affine(x, m, f, a);
+      } else {
+        const mat = parse_mat(document.getElementById('matrix' + which).value),
+          vec = parse_vec(document.getElementById('vector' + which).value);
+        if(det(mat) === 0)
+          throw `Affine transformation matrix ${which} is singular.`;
+        return x => vec_mul_add(mat, x, vec);
+      }
+    }
     generate_bn.addEventListener('click', e => {
-      const m0 = parseInt(multiplier0.value, 16), m1 = parseInt(multiplier1.value, 16);
-      if(!parity(m0)) {
-        alert(`First affine transformation multiplier (${multiplier0.value}) cannot be divisible by x + 1.`);
-        return;
+      try {
+        const affine0 = affineFnFactory(0), affine1 = affineFnFactory(1), poly = +field.value;
+        if(log_table[0] !== poly & 255) {
+          log_table[0] = poly;
+          const generator = generators[irreducible_polys.indexOf(poly)];
+          let a = generator;
+          for(let i = 1; i < 256; ++i) {
+            log_table[exp_table[i] = a] = i;
+            a = gf_mul(a, generator, poly);
+          }
+        }
+        /* Potential speedup for matrix affine transforms: iterate through all vectors in Gray code, then xor the changed matrix column onto
+        the previous result each time. It could even be possible to parallelize it by computing 4 parallel Gray code sequences at the same time
+        and XORing 4 copies of the changed column together. Difficult to work with on the 2nd affine function since the initial order is random. */
+        for(let i = 256; i--;)
+          SBOX[i] = affine1(gf_pow_cached(affine0(i), +power.value, poly));
+        generate_bn.disabled = true;
+        update();
+      } catch(error) {
+        code.value = `/* Error #${++errors}: ${error} */\n${code.value.replace(errorMsgRegExp, '')}`;
       }
-      if(!parity(m1)) {
-        alert(`Second affine transformation multiplier (${multiplier1.value}) cannot be divisible by x + 1.`);
-        return;
-      }
-      for(let i = 256; i--;)
-        SBOX[i] = affine(
-          gf_inv(
-            affine(i, m0, parseInt(adder0.value, 16)),
-            +field.value
-          ),
-          m1,
-          parseInt(adder1.value, 16)
-        );
-      update();
     });
-    const fieldPoly = field.children[0].children;
     randomize_bn.addEventListener('click', e => {
-      let m0 = Math.random() * 128 | 0, m1 = Math.random() * 128 | 0;
-      m0 |= 4928640 >> ((m0 ^ m0 >> 4) & 15) & 128; // multipliers must have an
-      m1 |= 4928640 >> ((m1 ^ m1 >> 4) & 15) & 128; // odd number of set bits
-      multiplier0.value = m0.toString(16).toUpperCase();
-      multiplier1.value = m1.toString(16).toUpperCase();
-      adder0.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
-      adder1.value = (Math.random() * 256 | 0).toString(16).toUpperCase();
+      let m, f, r;
+      do {
+        m = Math.random() * 255 + 1 | 0;
+        f = Math.random() * 256 | 256;
+        r = gf_xgcd(m, f)[1];
+      } while(r !== 1);
+      multiplier0.value = fmt_hex(m);
+      modulus0.value = fmt_hex(f - 256);
+      adder0.value = fmt_hex(Math.random() * 256 | 0);
+      matrix0.value = fmt_mat(nonsing());
+      vector0.value = fmt_vec(Math.random() * 256 | 0);
+      do {
+        m = Math.random() * 255 + 1 | 0;
+        f = Math.random() * 256 | 256;
+        r = gf_xgcd(m, f)[1];
+      } while(r !== 1);
+      multiplier1.value = fmt_hex(m);
+      modulus1.value = fmt_hex(f - 256);
+      adder1.value = fmt_hex(Math.random() * 256 | 0);
+      matrix1.value = fmt_mat(nonsing());
+      vector1.value = fmt_vec(Math.random() * 256 | 0);
       fieldPoly[Math.random() * fieldPoly.length | 0].selected = true;
+      exponents[Math.random() * exponents.length | 0].selected = true;
+      generate_bn.disabled = false;
     });
-    const errorMsgRegExp = /^\/\* Error .+\*\/\s/;
-    let errors = 0;
     run_bn.addEventListener('click', e => {
       try {
-        const sbox = new Uint8Array(256);
+        let sbox = new Uint8Array(256);
         eval(code.value);
         const n = check_unique(sbox);
         if(n >= 0)
           throw 'Sbox contains duplicate values: ' + n;
         SBOX = sbox;
+        generate_bn.disabled = false;
         code.value = code.value.replace(errorMsgRegExp, '');
         update();
         errors = 0;
@@ -320,19 +616,10 @@
     });
     function switchDisplay(e) {
       for(let i = 3; i--;)
-        displays.children[i].style.zIndex = 1 + (+e.target.value == i);
+        displays.children[i].style.zIndex = 1 + (+e.target.value === i);
     }
-    for(const radio of document.getElementsByName('analysis')) {
-      radio.addEventListener('click', switchDisplay);
-      if(radio.checked)
-        displays.children[+radio.value].style.zIndex = 2;
-    }
-    const lt = lc.getContext('2d', { alpha: false }),
-      dt = dc.getContext('2d', { alpha: false });
     function color(scale) {
-      if(!scale)
-        return '#fff'; // "safe" threshold: |scale| ≤ 16
-      const str = Math.max(257 - (scale * scale >> 1), 0).toString(16).padStart(2, '0').repeat(2);
+      const str = Math.max(255 - (scale * scale >> 1), 0).toString(16).padStart(2, '0').repeat(2);
       if(scale < 0)
         return '#ff' + str;
       return `#${str}ff`;
@@ -344,7 +631,7 @@
           let linearBias = 128, diffBias = 0;
           for(let i = 256; i--;) {
             linearBias -= parity(i & j ^ sbox[i] & k);
-            diffBias += (sbox[i] ^ sbox[i ^ j]) == k;
+            diffBias += (sbox[i] ^ sbox[i ^ j]) === k;
           }
           if(Math.abs(linearBias) > Math.abs(maxLinearBias[0]))
             maxLinearBias = [linearBias, j, k];
@@ -363,7 +650,48 @@
         if(maxLinearBias[2] >> i & 1)
           rhs += ` ⊕ S(x)<sub>${i}</sub>`;
       }
-      summary.innerHTML = `<br>Maximum linear probability bias (${(maxLinearBias[0] > 0 ? '+' : '') + (maxLinearBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; ${(lhs + rhs).replace(/⊕  ⊕/, '=')}<br>Maximum differential probability (${(maxDiffBias[0] / 2.56).toFixed(2)}%):<br>&nbsp; S(x) ⊕ ${maxDiffBias[2]} = S(x ⊕ ${maxDiffBias[1]})<br>${cycleDecomp(sbox)}`;
+      bt.fillStyle = '#fff';
+      bt.fillRect(8, 8, 144, 23);
+      bt.beginPath();
+      bt.setLineDash([1, 16]);
+      bt.moveTo(12, 20);
+      bt.lineTo(132, 20);
+      bt.stroke();
+      let mad = 0, md = 0;
+      for(let j = 8; j--;) {
+        const deltas = new Uint8Array(57);
+        for(let i = 0; i < 128; ++i) {
+          const l = i ^ i << 1,
+            diff = sbox[l] ^ sbox[l ^ 1 << j];
+          bt.fillStyle = color(4 - popcount(diff) << 2);
+          bt.fillRect(i + 8, j + 8, 1, 1);
+          for(let k = 8; k--;) {
+            const dk = diff >> k & 1;
+            deltas[k] += dk;
+            for(let m = k; m--;)
+              deltas[k * 8 - m] += diff >> m & dk;
+          }
+        }
+        const vars = new Float64Array(8);
+        for(let k = 8; k--;) {
+          const centered = deltas[k] - 64;
+          mad += Math.abs(centered);
+          if(Math.abs(centered) > Math.abs(md))
+            md = centered;
+          const count = deltas[k];
+          vars[k] = 128 / Math.sqrt(count * (128 - count));
+        }
+        for(let k = 8; k--;) {
+          bt.fillStyle = color(deltas[k] * 1.5625 - 100);
+          bt.fillRect(k + 140, j + 8, 1, 1);
+          for(let m = k; m--;) {
+            const corr = (deltas[k * 8 - m] - deltas[k] * deltas[m] * .0078125) * vars[k] * vars[m];
+            bt.fillStyle = color(corr);
+            bt.fillRect(12 + j * 16 + k, 24 + m, 1, 1);
+          }
+        }
+      }
+      summary_text.innerHTML = `<br>Maximum linear probability bias (${(maxLinearBias[0] > 0 ? '+' : '') + (maxLinearBias[0] * .390625).toFixed(2)}%):<br>&nbsp; ${(lhs + rhs).replace(/⊕  ⊕/, '=')}<br>Maximum differential probability (${(maxDiffBias[0] * .390625).toFixed(2)}%):<br>&nbsp; S(x) ⊕ ${maxDiffBias[2]} = S(x ⊕ ${maxDiffBias[1]})<br>SAC mean absolute deviation: ${(mad * .01220703125).toFixed(2)}%, maximum deviation: ${(md * .78125).toFixed(2)}%<br>${cycleDecomp(sbox)}`;
     }
     function cycleDecomp(sbox) {
       const arr = new Uint8Array(256);
@@ -374,21 +702,26 @@
           return 'Error while analyzing sbox cycle decomposition';
         temp = sbox[temp];
         arr[temp] = 1;
-        if(temp == currentCycle[0]) {
-          if(currentCycle.length < minCycle.length) {
+        if(temp === currentCycle[0]) {
+          if(currentCycle.length < minCycle.length)
             minCycle = currentCycle;
-          }
           temp = arr.indexOf(0);
           currentCycle = [temp];
-        } else {
+        } else
           currentCycle.push(temp);
-        }
       }
-      if(minCycle.length == 1)
-        return `Minimum iterative cycle: (${minCycle[0]}), Fixed point`;
+      if(minCycle.length === 1) {
+        minCycle = [];
+        for(let i = 0; i < 256; ++i)
+          if(i === sbox[i]) minCycle.push(i);
+        return `Fixed point${minCycle.length > 1 ? 's' : ''}: (${minCycle.slice(0, 3).join('), (')})${minCycle.length > 3 ? ', ... (' + minCycle.length + ' total)' : ''}`;
+      }
       if(minCycle.length < 5)
         return `Minimum iterative cycle: (${minCycle.join(' ')})`;
       return `Minimum iterative cycle: (${minCycle[0]} ... ${minCycle[minCycle.length - 1]}), length = ${minCycle.length}`;
+    }
+    function enableGenerate() {
+      generate_bn.disabled = false;
     }
     for(let i = 256; --i;) {
       SBOX[i] = i;
@@ -398,33 +731,106 @@
       dt.fillRect(0, i, 1, 1);
       dt.fillRect(i, 0, 1, 1);
     }
+    bt.fillStyle = '#fff';
+    bt.fillRect(0, 0, 152, 32);
+    bt.fillStyle = '#f00';
+    bt.strokeStyle = '#00f';
+    for(let i = 8; i--;) {
+      bt.fillRect(i, 15 - i, 1, 1);
+      bt.fillRect(i, 31 - i, 1, 1);
+      bt.beginPath();
+      bt.setLineDash([128 >> i]);
+      bt.moveTo(8 + (64 >> i || 1), i + .5);
+      bt.lineTo(136, i + .5);
+      bt.stroke();
+    }
+    bt.strokeStyle = '#f00';
+    bt.beginPath();
+    bt.setLineDash([1, 16]);
+    bt.moveTo(12, 20.5);
+    bt.lineTo(131, 20.5);
+    bt.stroke();
+    for(const radio of document.getElementsByName('analysis')) {
+      radio.addEventListener('click', switchDisplay);
+      if(radio.checked)
+        displays.children[+radio.value].style.zIndex = 2;
+    }
+    for(const input of nyberg.querySelectorAll('input[type="radio"]'))
+      input.addEventListener('change', enableGenerate);
+    for(const input of nyberg.querySelectorAll('input[type="text"]')) {
+      input.addEventListener('blur', sanitize_hex);
+      input.addEventListener('input', enableGenerate);
+    }
+    for(const textarea of nyberg.querySelectorAll('textarea')) {
+      textarea.addEventListener('beforeinput', sanitize_bin);
+      textarea.addEventListener('input', enableGenerate);
+    }
+    matrix0.placeholder = fmt_mat(Uint8Array.of(1, 2, 4, 8, 16, 32, 64, 128));
+    matrix1.placeholder = fmt_mat(Uint8Array.of(241, 227, 199, 143, 31, 62, 124, 248));
+    power.addEventListener('change', e => {
+      power_display.textContent = (+power.value === 254) ? '-1 ' : power.value;
+      enableGenerate();
+    });
+    field.addEventListener('change', e => {
+      polynomial_display.innerHTML = fmt_poly(field.value);
+      enableGenerate();
+    });
     update();
   });
   </script>
 </head>
 <body>
-  <div id="main">
+  <main>
     <div id="controls">
       <form onsubmit="return false;">
         <fieldset id="general">
           <legend>General</legend>
           This is a tool for generating and analyzing 8-bit substitution boxes.<br>
           <button id="shuffle_bn">Random Shuffle</button>
-          <button id="invert_bn">Invert</button>
           <button id="aes_bn">Load AES Sbox</button>
+          <button id="inv_aes_bn">Load Inverse AES Sbox</button>
           <button id="import_bn">Import</button>
           <button id="export_bn">Export</button>
-          <input type="reset" value="Reset">
+          <input id="reset_bn" type="reset" value="Reset">
         </fieldset>
         <fieldset id="nyberg">
           <legend>Nyberg Sbox</legend>
           <ol>
-            <li>Affine transformation<br>
+            <li>Affine transformation &nbsp;
+              <input type="radio" name="affine0" id="affine0poly_rd" value="0" checked><label for="affine0poly_rd">polynomial</label> &nbsp;
+              <input type="radio" name="affine0" id="affine0mat_rd" value="1"><label for="affine0mat_rd">matrix</label>
+              <br>
+              <div class="toggle" id="affine0poly">
               x' = (x &times; <input type="text" id="multiplier0" placeholder="1" value="1" size="1" maxlength="3"><sub>16</sub>
-              mod 101<sub>16</sub>) ⊕ <input type="text" id="adder0" placeholder="0" value="0" size="1" maxlength="3"><sub>16</sub></li>
-            <li>Galois Field inversion<br>
-              Using field <select id="field">
-              <optgroup label="GF(2⁸)/">
+              mod 1<input type="text" id="modulus0" placeholder="00" value="00" size="1" maxlength="3"><sub>16</sub>)
+              ⊕ <input type="text" id="adder0" placeholder="00" value="00" size="1" maxlength="3"><sub>16</sub>
+              </div>
+              <div class="toggle" id="affine0mat">
+              <span>x' = </span>
+              <textarea id="matrix0" rows="8" cols="15" spellcheck="false" maxlength="128">1 0 0 0 0 0 0 0
+0 1 0 0 0 0 0 0
+0 0 1 0 0 0 0 0
+0 0 0 1 0 0 0 0
+0 0 0 0 1 0 0 0
+0 0 0 0 0 1 0 0
+0 0 0 0 0 0 1 0
+0 0 0 0 0 0 0 1</textarea>
+              <span> &centerdot; x ⊕ </span>
+              <textarea id="vector0" rows="8" cols="1" spellcheck="false" placeholder="0 1 1 0 0 0 1 1" maxlength="16">0 0 0 0 0 0 0 0</textarea>
+              </div>
+            </li>
+
+            <li>Galois Field exponentiation by <select id="power">
+              <option value="127">127</option>
+              <option value="191">191</option>
+              <option value="223">223</option>
+              <option value="239">239</option>
+              <option value="247">247</option>
+              <option value="251">251</option>
+              <option value="253">253</option>
+              <option value="254" selected>254 (inverse)</option>
+            </select><br>
+              using irreducible polynomial <select id="field">
                 <option value="283" selected>100011011 (11B₁₆)</option><option value="285">100011101 (11D₁₆)</option>
                 <option value="299">100101011 (12B₁₆)</option><option value="301">100101101 (12D₁₆)</option>
                 <option value="313">100111001 (139₁₆)</option><option value="319">100111111 (13F₁₆)</option>
@@ -440,28 +846,55 @@
                 <option value="471">111010111 (1D7₁₆)</option><option value="477">111011101 (1DD₁₆)</option>
                 <option value="487">111100111 (1E7₁₆)</option><option value="499">111110011 (1F3₁₆)</option>
                 <option value="501">111110101 (1F5₁₆)</option><option value="505">111111001 (1F9₁₆)</option>
-              </optgroup>
-              <option value="257">GF(257) (bad)</option>
             </select>,<br>
-            x'' = x'<sup>-1</sup> &nbsp; &nbsp; &nbsp; if x' ≠ 0<br>
-            &nbsp; &nbsp; &nbsp; 0 &nbsp; &nbsp; &nbsp; &nbsp; if x' = 0</li>
-            <li>Affine transformation<br>
+            x'' = x'<sup id="power_display">-1</sup><span id="inverse_display">&nbsp; if x' ≠ 0 mod
+              <span id="polynomial_display">x<sup>8</sup> + x<sup>4</sup> + x<sup>3</sup> + x + 1</span><br>
+            &nbsp; &nbsp; &nbsp; 0 &nbsp; &nbsp; if x' = 0</span></li>
+            <li>Affine transformation &nbsp;
+              <input type="radio" name="affine1" id="affine1poly_rd" value="0" checked><label for="affine1poly_rd">polynomial</label> &nbsp;
+              <input type="radio" name="affine1" id="affine1mat_rd" value="1"><label for="affine1mat_rd">matrix</label>
+              <br>
+              <div class="toggle" id="affine1poly">
               x''' = (x'' &times; <input type="text" id="multiplier1" placeholder="1F" value="1F" size="1" maxlength="3"><sub>16</sub>
-              mod 101<sub>16</sub>) ⊕ <input type="text" id="adder1" placeholder="63" value="63" size="1" maxlength="3"><sub>16</sub></li>
+              mod 1<input type="text" id="modulus1" placeholder="01" value="01" size="1" maxlength="3"><sub>16</sub>)
+              ⊕ <input type="text" id="adder1" placeholder="63" value="63" size="1" maxlength="3"><sub>16</sub>
+              </div>
+              <div class="toggle" id="affine1mat">
+              <span>x''' = </span>
+              <textarea id="matrix1" rows="8" cols="15" spellcheck="false" maxlength="128">1 0 0 0 1 1 1 1
+1 1 0 0 0 1 1 1
+1 1 1 0 0 0 1 1
+1 1 1 1 0 0 0 1
+1 1 1 1 1 0 0 0
+0 1 1 1 1 1 0 0
+0 0 1 1 1 1 1 0
+0 0 0 1 1 1 1 1</textarea>
+              <span> &centerdot; x'' ⊕ </span>
+              <textarea id="vector1" rows="8" cols="1" spellcheck="false" placeholder="0 1 1 0 0 0 1 1" maxlength="16">1 1 0 0 0 1 1 0</textarea>
+              </div>
+            </li>
           </ol>
           <button id="generate_bn">Generate Nyberg Sbox</button>
           <button id="randomize_bn">Randomize parameters</button>
+          <button id="invert_bn">Invert parameters</button>
         </fieldset>
         <fieldset id="custom">
           <legend>Custom Sbox</legend>
-          Available functions:<br>
-          <code>aes_sbox(<samp>input</samp>)</code><br>
-          <code>aes_inv_sbox(<samp>input</samp>)</code><br>
-          <code>rotl(<samp>byte</samp>, <samp>shift</samp>)</code> // rotate left<br>
-          <code>affine(<samp>x</samp>, <samp>multiplier</samp>, <samp>adder</samp>)</code><br>
-          <code>gf_mul(<samp>x</samp>, <samp>y</samp>, <samp>polynomial</samp> = <kbd>0x11B</kbd>)</code><br>
-          <code>gf_inv(<samp>x</samp>, <samp>polynomial</samp> = <kbd>0x11B</kbd>)</code><br>
-          <code>xgcd(<samp>x</samp>, <samp>modulus</samp> = <kbd>257</kbd>)</code><br>
+          <details open>
+            <summary>Available functions</summary>
+            <code>aes_sbox(<samp>input</samp>)</code><br>
+            <code>aes_inv_sbox(<samp>input</samp>)</code><br>
+            <code>rotl(<samp>byte</samp>, <samp>shift</samp>)</code> // rotate left<br>
+            <code>reverse(<samp>byte</samp>)</code> // reverse bits<br>
+            <code>affine(<samp>x</samp>, <samp>matrix</samp>, <samp>adder</samp>)</code><br>
+            <code>affine_rot(<samp>x</samp>, <samp>multiplier</samp>, <samp>adder</samp>)</code><br>
+            <code>gf_mul(<samp>x</samp>, <samp>y</samp>, <samp>polynomial</samp> = <kbd>0</kbd>)</code><br>
+            <code>gf_pow(<samp>x</samp>, <samp>power</samp>, <samp>polynomial</samp> = <kbd>0x11B</kbd>)</code><br>
+            <code>gf_inv(<samp>x</samp>, <samp>polynomial</samp> = <kbd>0x11B</kbd>)</code><br>
+            <code>gf_div(<samp>x</samp>, <samp>y</samp>)</code> // Euclidean division, returns [quotient, remainder]<br>
+            <code>gf_xgcd(<samp>x</samp>, <samp>m</samp> = <kbd>0x11B</kbd>)</code> // returns [<samp>x</samp>^-1 mod <samp>m</samp>, gcd(<samp>x</samp>, <samp>m</samp>)]<br>
+            <code>xgcd(<samp>x</samp>, <samp>modulus</samp> = <kbd>257</kbd>)</code> // for integers<br>
+          </details>
           <code><kbd>let</kbd> <samp>sbox</samp> = <kbd>new</kbd> Uint8Array(<kbd>256</kbd>)</code> // You should populate this array.<br>
           <textarea id="code" rows="30" cols="60" spellcheck="false" placeholder="Try not to write an infinite loop.">for(let i = 0; i < 256; ++i) {
   sbox[i] = i;
@@ -480,29 +913,34 @@
             <td>08</td><td>09</td><td>0A</td><td>0B</td><td>0C</td><td>0D</td><td>0E</td><td>0F</td>
           </tr>
         </thead>
-        <tbody id="box" contenteditable></tbody>
+        <tbody id="box"></tbody>
       </table>
       <span>
         Show analysis:
         <input type="radio" name="analysis" value="0" id="linear_rd" checked><label for="linear_rd">Linear</label>
         <input type="radio" name="analysis" value="1" id="diff_rd"><label for="diff_rd">Differential</label>
-        <input type="radio" name="analysis" value="2" id="summary_rd"><label for="summary_rd">Summary</label>
+        <input type="radio" name="analysis" value="2" id="summary_rd"><label for="summary_rd">SAC, BIC, & Summary</label>
       </span>
       <div id="displays">
         <canvas id="lc" width="256" height="256"></canvas>
         <canvas id="dc" width="256" height="256"></canvas>
-        <div id="summary"></div>
+        <div id="summary">
+          <p id="summary_text"></p>
+          <canvas id="bc" width="152" height="32"></canvas>
+        </div>
       </div>
     </fieldset>
-  </div>
-  <div>
+  </main>
+  <footer>
     This tool is only made for educational purposes and is not meant to be used in serious cryptographic applications. Made by <a href="https://github.com/CharCoding/">@CharCoding</a>.<br>
     References:
     <ol>
-      <li>Nyberg K. (1991) <a href="https://link.springer.com/chapter/10.1007%2F3-540-46416-6_32">Perfect nonlinear S-boxes</a>. In: Davies D.W. (eds) Advances in Cryptology — EUROCRYPT ’91. EUROCRYPT 1991. Lecture Notes in Computer Science, vol 547. Springer, Berlin, Heidelberg</li>
+      <li>Nyberg K. (1991) <a href="https://link.springer.com/chapter/10.1007/3-540-46416-6_32">Perfect nonlinear S-boxes</a>. In: Davies D.W. (eds) Advances in Cryptology — EUROCRYPT ’91. EUROCRYPT 1991. Lecture Notes in Computer Science, vol 547. Springer, Berlin, Heidelberg. https://doi.org/10.1007/3-540-46416-6_32</li>
+      <li>Beth, T., Ding, C. (1994). <a href="https://link.springer.com/chapter/10.1007/3-540-48285-7_7">On Almost Perfect Nonlinear Permutations</a>. In: Helleseth, T. (eds) Advances in Cryptology — EUROCRYPT ’93. EUROCRYPT 1993. Lecture Notes in Computer Science, vol 765. Springer, Berlin, Heidelberg. https://doi.org/10.1007/3-540-48285-7_7</li>
       <li><a href="https://csrc.nist.gov/csrc/media/publications/fips/197/final/documents/fips-197.pdf">"The Advanced Encryption Standard"</a> (PDF). FIPS PUB 197: the official AES standard. Federal Information Processing Standard. 2001-11-26.</li>
+      <li>Randall, Dana. (1993). <a href="https://www.researchgate.net/publication/2729950_Efficient_Generation_of_Random_Nonsingular_Matrices">Efficient Generation of Random Nonsingular Matrices</a>. Random Structures & Algorithms. 4. 10.1002/rsa.3240040108.<br><small>Note: this paper forgot to mention a key step in its algorithm where you need to assign random values to A[ir]</small></li>
       <li>Jie Cui; Liusheng Huang; Hong Zhong; Chinchen Chang; Wei Yang (May 2011) <a href="https://www.researchgate.net/publication/267554952_An_improved_AES_S-box_and_its_performance_analysis">"AN IMPROVED AES S-BOX AND ITS PERFORMANCE ANALYSIS"</a> (PDF).</li>
     </ol>
-  </div>
+  </footer>
 </body>
 </html>
